@@ -13,12 +13,6 @@ resource "aws_security_group" "alb_sg" {
     ipv6_cidr_blocks = ["::/0"]
   }
 
-  ingress {
-  from_port       = -1
-  to_port         = -1
-  protocol        = "icmp"
-  security_groups = [aws_security_group.bastion_sg.id]
-}
 
   ingress {
     from_port   = 443
@@ -77,6 +71,12 @@ resource "aws_security_group" "app_sg" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
+  from_port       = -1
+  to_port         = -1
+  protocol        = "icmp"
+  security_groups = [aws_security_group.bastion_sg.id]
+}
+  ingress {
     from_port       = 80
     to_port         = 80
     protocol        = "tcp"
@@ -117,6 +117,12 @@ resource "aws_security_group" "db_sg" {
   description = "DB instances - allow MySQL from App and SSH from Bastion"
   vpc_id      = aws_vpc.main.id
 
+  ingress {
+  from_port       = -1
+  to_port         = -1
+  protocol        = "icmp"
+  security_groups = [aws_security_group.bastion_sg.id]
+}
   ingress {
     from_port       = 3306
     to_port         = 3306

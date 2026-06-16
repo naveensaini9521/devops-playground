@@ -1,0 +1,188 @@
+Complete Step-by-Step Database Migration
+Here's everything we did, step by step with all commands:
+
+📍 STEP 1: Dump Local Database
+Location: Local Machine
+
+bash
+mysqldump -u root -pAdmin@123 --single-transaction --databases crawler > crawlerdb_dump.sql
+What it does: Exports your local crawler database to a file called crawlerdb_dump.sql
+
+Check the dump:
+
+bash
+ls -lh crawlerdb_dump.sql
+📍 STEP 2: Fix Database Compatibility Issues
+Location: Local Machine
+
+2a. Fix Collation (MySQL 8.0 → MariaDB 10.5 compatibility):
+
+bash
+sed -i 's/utf8mb4_0900_ai_ci/utf8mb4_general_ci/g' crawlerdb_dump.sql
+What it does: Converts MySQL 8.0 collation to MariaDB compatible collation
+
+2b. Fix Database Name:
+
+bash
+sed -i 's/`crawler`/`crawlerdb`/g' crawlerdb_dump.sql
+What it does: Changes database name from crawler to crawlerdb (matching your AWS setup)
+
+📍 STEP 3: Verify the Fixes
+Location: Local Machine
+
+bash
+head -30 crawlerdb_dump.sql
+What it does: Shows first 30 lines to verify the changes worked
+
+📍 STEP 4: Test Bastion Connection
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem ec2-user@13.233.56.172
+What it does: Tests connection to bastion host
+
+If successful, type exit to return to local
+
+📍 STEP 5: Test Master Connection Through Bastion
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174
+What it does: Tests connection to master database instance through bastion
+
+If successful, type exit to return to local
+
+📍 STEP 6: Copy Dump to Master Server
+Location: Local Machine
+
+bash
+scp -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 crawlerdb_dump.sql ec2-user@10.0.20.174:/tmp/
+What it does: Copies the SQL dump file to the master server's /tmp directory
+
+Expected output:
+
+text
+crawlerdb_dump.sql                    100%   11MB   3.1MB/s   00:03
+📍 STEP 7: Verify File Copied Successfully
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "ls -lh /tmp/crawlerdb_dump.sql"
+Expected output: Shows file size (~11MB)
+
+📍 STEP 8: Check MySQL on Master
+Location: Local Machine
+
+bash
+# Check if MySQL is installed
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "which mysql || echo 'MySQL not found'"
+
+# If not found, install it:
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "sudo dnf install -y mariadb105"
+
+# Test MySQL connection:
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'SELECT VERSION();'"
+📍 STEP 9: Restore Database on Master
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 < /tmp/crawlerdb_dump.sql"
+What it does: Restores the database from the dump file
+
+Note: No output means success!
+
+📍 STEP 10: Verify Restore - Check Databases
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'SHOW DATABASES;'"
+Expected output: Shows crawlerdb in the list
+
+📍 STEP 11: Verify Restore - Check Tables
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'USE crawlerdb; SHOW TABLES;'"
+Expected output: Shows all tables (crawler_data, user, cronjobs, etc.)
+
+📍 STEP 12: Check Data Size
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'SELECT table_schema, ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS \"Size (MB)\" FROM information_schema.tables WHERE table_schema = \"crawlerdb\" GROUP BY table_schema;'"
+Expected output:
+
+text
+table_schema    Size (MB)
+crawlerdb       10.64
+📍 STEP 13: Check Row Counts
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'SELECT \"crawler_data\" AS Table, COUNT(*) AS Rows FROM crawlerdb.crawler_data UNION SELECT \"user\", COUNT(*) FROM crawlerdb.user;'"
+📍 STEP 14: Check Master Status (for Replication)
+Location: Local Machine
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'SHOW MASTER STATUS\G'"
+Expected output:
+
+text
+File: mysql-bin.000001
+Position: 1298
+Binlog_Do_DB: 
+Binlog_Ignore_DB:
+📍 STEP 15: Check Slave Replication
+Location: Local Machine
+
+15a. Get Slave IP:
+
+bash
+SLAVE_IP=$(aws ec2 describe-instances \
+  --filters "Name=tag:Role,Values=slave" "Name=tag:Tier,Values=db" \
+  --query 'Reservations[*].Instances[*].PrivateIpAddress' \
+  --output text --region ap-south-1)
+echo "Slave IP: $SLAVE_IP"
+15b. Check Slave Status:
+
+bash
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@$SLAVE_IP "mysql -u root -pcrawler123 -e 'SHOW SLAVE STATUS\G' | grep -E 'Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master'"
+Expected output:
+
+text
+Slave_IO_Running: Yes
+Slave_SQL_Running: Yes
+Seconds_Behind_Master: 0
+📍 STEP 16: Clean Up (Optional)
+Location: Local Machine
+
+bash
+# Remove dump from master
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "rm -f /tmp/crawlerdb_dump.sql"
+
+# Remove local dump (optional)
+rm crawlerdb_dump.sql
+🎯 Complete One-Liner (All Steps Combined)
+bash
+mysqldump -u root -pAdmin@123 --single-transaction --databases crawler > crawlerdb_dump.sql && \
+sed -i 's/utf8mb4_0900_ai_ci/utf8mb4_general_ci/g' crawlerdb_dump.sql && \
+sed -i 's/`crawler`/`crawlerdb`/g' crawlerdb_dump.sql && \
+scp -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 crawlerdb_dump.sql ec2-user@10.0.20.174:/tmp/ && \
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 < /tmp/crawlerdb_dump.sql"
+📋 Verification Commands Summary
+bash
+# Check databases
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'SHOW DATABASES;'"
+
+# Check tables
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'USE crawlerdb; SHOW TABLES;'"
+
+# Check data
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'SELECT * FROM crawlerdb.user LIMIT 3;'"
+
+# Check master status
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@10.0.20.174 "mysql -u root -pcrawler123 -e 'SHOW MASTER STATUS\G'"
+
+# Check slave status
+SLAVE_IP=$(aws ec2 describe-instances --filters "Name=tag:Role,Values=slave" "Name=tag:Tier,Values=db" --query 'Reservations[*].Instances[*].PrivateIpAddress' --output text --region ap-south-1)
+ssh -i ~/Desktop/AWS/devops_ssh.pem -o ProxyJump=ec2-user@13.233.56.172 ec2-user@$SLAVE_IP "mysql -u root -pcrawler123 -e 'SHOW SLAVE STATUS\G' | grep -E 'Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master'"

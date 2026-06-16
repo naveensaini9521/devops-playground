@@ -51,3 +51,7 @@ sudo mysql -e "USE crawlerdb; CREATE TABLE replication_test (id INT AUTO_INCREME
 
 ALB_DNS=$(terraform -chdir=../terraform/ output -raw alb_dns_name)
 curl "http://${ALB_DNS}/health"
+
+# Test server
+
+ssh -i /home/naveen-saini/Desktop/AWS/devops-key.pem ec2-user@3.109.216.105

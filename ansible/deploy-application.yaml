@@ -14,7 +14,7 @@
     docker_network: "web-network"
     app_workers: 4
     app_entry_point: "app:app"
-    elb_dns: "crawler-alb-451910707.ap-south-1.elb.amazonaws.com"
+    elb_dns: "crawler-alb-580337238.ap-south-1.elb.amazonaws.com"
 
   tasks:
     - name: Display deployment info
