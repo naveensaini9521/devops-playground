@@ -19,3 +19,7 @@ ansible-inventory -i aws_ec2.yml --list
 ansible-inventory --list
 
 ansible tag_smart_voting_server -m ping
+
+# Run ansible playbook
+
+ansible-playbook setup-vm.yml
