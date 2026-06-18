@@ -27,6 +27,12 @@ resource "aws_instance" "smart_voting_server" {
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.smart_voting_sg.id]
 
+  root_block_device {
+    volume_size = 25
+    volume_type = "gp3"
+    encrypted   = true
+  }
+
   tags = {
     Name = var.instance_name
   }
