@@ -1,0 +1,8 @@
+---
+- hosts: voting-system
+  become: yes
+
+  roles:
+    - common
+    - nginx
+    - docker
