@@ -1,6 +1,6 @@
 ---
 - name: Configure VM with all required packages (Amazon Linux 2023)
-  hosts: tag_Name_smart_voting_server
+  hosts: tag_smart_voting_server
   become: yes
   gather_facts: yes
 
@@ -15,7 +15,6 @@
       dnf:
         name:
           - git
-          - curl
           - wget
           - unzip
           - vim
@@ -36,7 +35,6 @@
           - libpng-devel
           - libtiff-devel
           - libwebp-devel
-          - opencv
         state: present
 
     - name: Set timezone to Asia/Kolkata
@@ -70,20 +68,6 @@
         name: nginx
         state: started
         enabled: yes
-
-    - name: Allow HTTP (port 80) in firewalld (Amazon Linux uses firewalld)
-      firewalld:
-        service: http
-        permanent: yes
-        state: enabled
-        immediate: yes
-
-    - name: Allow HTTPS (port 443) in firewalld
-      firewalld:
-        service: https
-        permanent: yes
-        state: enabled
-        immediate: yes
 
     - name: Install Gunicorn using pip3
       pip:

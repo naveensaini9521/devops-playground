@@ -5,7 +5,8 @@ regions:
 
 filters:
   instance-state-name: running
-  tag:Name: smart-voting-server
+  tag:Name:
+    - smart-voting-server
 
 hostnames:
   - public_ip_address
