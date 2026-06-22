@@ -1,3 +1,4 @@
+# IAM role for EC2 to use SSM
 resource "aws_iam_role" "ssm_role" {
   name = "smart-voting-ssm-role"
   assume_role_policy = jsonencode({
