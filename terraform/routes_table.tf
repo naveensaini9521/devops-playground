@@ -1,4 +1,4 @@
-# Public Route Table (IGW)
+# Public Route Table
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.main.id
 
@@ -8,11 +8,13 @@ resource "aws_route_table" "public_rt" {
   }
 
   tags = {
-    Name = "public-route-table"
+    Name        = "crawler-public-rt"
+    Project     = "crawler"
+    Environment = var.environment
   }
 }
 
-# Private Route Table (NAT)
+# Private Route Table
 resource "aws_route_table" "private_rt" {
   vpc_id = aws_vpc.main.id
 
@@ -22,13 +24,16 @@ resource "aws_route_table" "private_rt" {
   }
 
   tags = {
-    Name = "private-route-table"
+    Name        = "crawler-private-rt"
+    Project     = "crawler"
+    Environment = var.environment
   }
 }
 
-# Public Subnet Association
+# Public Subnet Associations (2 subnets)
 resource "aws_route_table_association" "public_assoc" {
-  count          = 2
+  count = 2
+
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public_rt.id
 }
