@@ -1,3 +1,25 @@
+---
+# SSH Configuration
 ansible_user: ec2-user
 ansible_ssh_private_key_file: /home/naveen-saini/Desktop/AWS/devops-key.pem
 ansible_python_interpreter: /usr/bin/python3
+
+# Database Configuration
+db_username: crawler
+db_password: crawler123
+db_name: crawlerdb
+db_replication_password: "ReplicaPass!123"
+
+# Application Configuration
+app_name: web-crawler
+app_user: ec2-user
+app_port: 8000
+external_port: 80
+docker_network: web-network
+repo_url: "https://github.com/naveensaini9521/web-crawler.git"
+app_dir: "/var/www/{{ app_name }}"
+venv_dir: "/opt/{{ app_name }}-venv"
+
+# Environment
+environment: production
+project: crawler
