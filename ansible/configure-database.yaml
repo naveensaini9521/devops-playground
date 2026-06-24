@@ -3,17 +3,20 @@
   hosts: role_master:role_slave
   become: yes
   gather_facts: yes
+  # Changed serial to 100% (or removed) to allow facts to be shared globally between blocks
+  serial: "100%"
 
   vars:
-    db_name: crawler
-    db_username: crawler_app
-    db_password: "Admin#123"
-    db_replication_password: "ReplicaPass!123"
+    mysql_root_password: "{{ db_password }}"
 
   tasks:
     - name: Display database role
       debug:
-        msg: "Configuring {{ inventory_hostname }}"
+        msg: |
+          Configuring {{ inventory_hostname }}
+          Role: {{ 'MASTER' if 'role_master' in group_names else 'SLAVE' }}
+          Database: {{ db_name }}
+          User: {{ db_username }}
 
     - name: Install MariaDB Server
       dnf:
@@ -21,129 +24,150 @@
           - mariadb105-server
           - mariadb105
         state: present
+        update_cache: yes
 
-    - name: Start and enable MySQL
+    - name: Install PyMySQL
+      pip:
+        name: PyMySQL
+        state: present
+        executable: pip3
+
+    - name: Start MariaDB
       systemd:
         name: mariadb
         state: started
         enabled: yes
 
-    - name: Get temporary root password
-      shell: grep 'temporary password' /var/log/mysqld.log | awk '{print $NF}'
-      register: temp_pass
-      changed_when: false
+    - name: Wait for MariaDB
+      wait_for:
+        port: 3306
+        timeout: 60
+
+    - name: Set root password
+      shell: |
+        mysqladmin -u root password "{{ mysql_root_password }}" 2>/dev/null || true
+        mysql -u root -p{{ mysql_root_password }} -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ mysql_root_password }}';" 2>/dev/null || true
       ignore_errors: yes
 
-    - name: Configure Master Database
+    - name: Create .my.cnf
+      copy:
+        dest: /root/.my.cnf
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          [client]
+          user=root
+          password={{ mysql_root_password }}
+          host=localhost
+
+    # ==================== MASTER BLOCK ====================
+    - name: Configure Master
       block:
-        - name: Set root password and create database
-          shell: |
-            sudo mysql --connect-expired-password <<EOF
-            ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ db_password }}';
-            CREATE DATABASE IF NOT EXISTS {{ db_name }};
-            CREATE USER IF NOT EXISTS '{{ db_username }}'@'%' IDENTIFIED BY '{{ db_password }}';
-            GRANT ALL PRIVILEGES ON {{ db_name }}.* TO '{{ db_username }}'@'%';
-
-            CREATE USER IF NOT EXISTS 'replication'@'%' IDENTIFIED BY '{{ db_replication_password }}';
-            GRANT REPLICATION SLAVE ON *.* TO 'replication'@'%';
-
-            FLUSH PRIVILEGES;
-            EOF
-          when: temp_pass.stdout != ""
-          ignore_errors: yes
-
-        - name: Create master configuration
+        - name: Configure master cnf file
           copy:
             dest: /etc/my.cnf.d/master.cnf
             content: |
               [mysqld]
               server-id=1
               log_bin=mysql-bin
+              binlog_format=ROW
               bind-address=0.0.0.0
-              binlog_do_db={{ db_name }}
           notify: restart mysql
 
-        - name: Flush handlers
+        - name: Force restart master immediately to apply bin configurations
           meta: flush_handlers
 
-        - name: Get master status
+        - name: Create application database and replication configurations
           shell: |
-            sudo mysql -e "SHOW MASTER STATUS\G"
-          register: master_status
+            mysql -u root -p{{ mysql_root_password }} <<EOF
+            CREATE DATABASE IF NOT EXISTS {{ db_name }};
+            CREATE USER IF NOT EXISTS '{{ db_username }}'@'%' IDENTIFIED BY '{{ db_password }}';
+            GRANT ALL PRIVILEGES ON {{ db_name }}.* TO '{{ db_username }}'@'%';
+            CREATE USER IF NOT EXISTS 'replication'@'%' IDENTIFIED BY '{{ db_replication_password }}';
+            GRANT REPLICATION SLAVE ON *.* TO 'replication'@'%';
+            FLUSH PRIVILEGES;
+            EOF
           ignore_errors: yes
 
-        - debug:
-            var: master_status.stdout_lines
+        - name: Extract current execution status of binary logs
+          shell: |
+            mysql -u root -p{{ mysql_root_password }} -e "SHOW MASTER STATUS\G" | grep -E "File|Position" | awk '{print $2}' | paste -sd ':'
+          register: master_status
+
+        - name: Parse and Register Global Fact Properties
+          set_fact:
+            master_file: "{{ master_status.stdout.split(':')[0] }}"
+            master_pos: "{{ master_status.stdout.split(':')[1] }}"
+
+        - name: Display Master Binary Coordinates
+          debug:
+            msg: "Master File: {{ master_file }}, Position: {{ master_pos }}"
 
       when: "'role_master' in group_names"
 
-    - name: Configure Slave Database
+    # ==================== SLAVE BLOCK ====================
+    - name: Configure Slave
       block:
-        - name: Set root password on slave
-          shell: |
-            sudo mysql <<EOF
-            ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ db_password }}';
-            FLUSH PRIVILEGES;
-            EOF
-          when: temp_pass.stdout != ""
-          ignore_errors: yes
+        - name: Calculate distinct server-id from IP fingerprint
+          set_fact:
+            slave_id: "{{ 100 + (ansible_default_ipv4.address | replace('.', '') | int % 99) }}"
 
-        - name: Create slave configuration
+        - name: Write Slave Configurations
           copy:
             dest: /etc/my.cnf.d/slave.cnf
             content: |
               [mysqld]
-              server-id=2
+              server-id={{ slave_id }}
               relay-log=relay-bin
-              log_bin=mysql-bin
               read_only=1
               bind-address=0.0.0.0
           notify: restart mysql
 
-        - name: Flush handlers
+        - name: Force restart slave immediately to apply limits
           meta: flush_handlers
 
-        - name: Get master IP
-          set_fact:
-            master_ip: "{{ hostvars[groups['role_master'][0]].ansible_host | default(groups['role_master'][0]) }}"
-
-        - name: Display master IP
-          debug:
-            msg: "Master IP: {{ master_ip }}"
-
-        - name: Wait for master MySQL port
-          wait_for:
-            host: "{{ master_ip }}"
-            port: 3306
-            timeout: 120
-
-        - name: Configure replication
+        - name: Setup Master Sync Connection Properties
           shell: |
-            sudo mysql <<EOF
+            mysql -u root -p{{ mysql_root_password }} <<EOF
             STOP SLAVE;
             RESET SLAVE ALL;
-
             CHANGE MASTER TO
-              MASTER_HOST='{{ master_ip }}',
+              MASTER_HOST='{{ hostvars[groups['role_master'][0]].ansible_default_ipv4.address }}',
               MASTER_USER='replication',
               MASTER_PASSWORD='{{ db_replication_password }}',
-              MASTER_LOG_FILE='mysql-bin.000001',
-              MASTER_LOG_POS=154;
-
+              MASTER_LOG_FILE='{{ hostvars[groups['role_master'][0]].master_file }}',
+              MASTER_LOG_POS={{ hostvars[groups['role_master'][0]].master_pos }},
+              MASTER_CONNECT_RETRY=60;
             START SLAVE;
             EOF
           ignore_errors: yes
 
-        - name: Check slave status
+        - name: Validate System Pipeline Execution Sync Status
           shell: |
-            sudo mysql -e "SHOW SLAVE STATUS\G"
-          register: slave_status
+            mysql -u root -p{{ mysql_root_password }} -e "SHOW SLAVE STATUS\G" | grep -E "Slave_IO_Running|Slave_SQL_Running"
+          register: slave_check
           ignore_errors: yes
 
-        - debug:
-            var: slave_status.stdout_lines
+        - name: Output Pipeline Check Logs
+          debug:
+            var: slave_check.stdout_lines
+          when: slave_check.stdout is defined
 
       when: "'role_slave' in group_names"
+
+    # ==================== FOOTER COMPLETION ====================
+    - name: Database configuration complete
+      debug:
+        msg: |
+          ============================================
+          DATABASE CONFIGURATION COMPLETE
+          ============================================
+          Host: {{ inventory_hostname }}
+          Role: {{ 'MASTER' if 'role_master' in group_names else 'SLAVE' }}
+          Database: {{ db_name }}
+          User: {{ db_username }}
+          ============================================
 
   handlers:
     - name: restart mysql
