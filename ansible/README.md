@@ -18,8 +18,6 @@ ansible-inventory -i aws_ec2.yml --list
 
 ansible-inventory --list
 
-ansible tag_smart_voting_server -m ping
-
 cd ../ansible/
 
 # 3a. Check inventory
@@ -35,25 +33,19 @@ ansible tag_Role_slave -m ping
 # 3c. Configure application servers
 
 ansible-playbook setup-vm.yaml
-ansible-playbook deploy-web-crawler.yaml
+ansible-playbook deploy-docker.yaml
 
 # 3d. Configure database servers
 
 ansible-playbook configure-database.yaml
 
-# 4. Verify everything
+# Check System Status on the Slave Node
 
-# Check application health
+sudo mysql -e "SHOW SLAVE STATUS\G"
 
-ansible tier_app -m shell -a "curl -s localhost:8000/health"
+# Run a Functional Replication Test
 
-# Check database master
-
-ansible tag_Role_master -m shell -a "mysql -u root -p'Admin#123' -e 'SHOW DATABASES;'"
-
-# Check replication
-
-ansible tag_Role_slave -m shell -a "mysql -u root -p'Admin#123' -e 'SHOW SLAVE STATUS\G' | grep -E 'Slave_IO_Running|Slave_SQL_Running'"
+sudo mysql -e "USE crawlerdb; CREATE TABLE replication_test (id INT AUTO_INCREMENT PRIMARY KEY, tested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP); INSERT INTO replication_test () VALUES ();"
 
 # Get ALB DNS
 
