@@ -1,6 +1,6 @@
 # ALB Security Group
 resource "aws_security_group" "alb_sg" {
-  name        = "smart-voting-alb-sg"
+  name        = "crawler-alb-sg"
   description = "Security Group for ALB"
   vpc_id      = aws_vpc.main.id
 
@@ -9,6 +9,8 @@ resource "aws_security_group" "alb_sg" {
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   ingress {
@@ -16,6 +18,8 @@ resource "aws_security_group" "alb_sg" {
     to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
+
+    ipv6_cidr_blocks = ["::/0"]
   }
 
   egress {
@@ -26,13 +30,15 @@ resource "aws_security_group" "alb_sg" {
   }
 
   tags = {
-    Name = "smart-voting-alb-sg"
+    Name        = "crawler-alb-sg"
+    Project     = "crawler"
+    Environment = var.environment
   }
 }
 
 # Bastion Security Group
 resource "aws_security_group" "bastion_sg" {
-  name        = "smart-voting-bastion-sg"
+  name        = "crawler-bastion-sg"
   description = "Bastion - allow SSH from whitelisted IP"
   vpc_id      = aws_vpc.main.id
 
@@ -40,7 +46,7 @@ resource "aws_security_group" "bastion_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["157.48.213.29/32"]
+    cidr_blocks = [var.bastion_allowed_ip]
   }
 
   egress {
@@ -51,19 +57,28 @@ resource "aws_security_group" "bastion_sg" {
   }
 
   tags = {
-    Name = "smart-voting-bastion-sg"
+    Name        = "crawler-bastion-sg"
+    Project     = "crawler"
+    Environment = var.environment
   }
 }
 
 # App Security Group
 resource "aws_security_group" "app_sg" {
-  name        = "smart-voting-app-sg"
+  name        = "crawler-app-sg"
   description = "App instances - HTTP from ALB and SSH from Bastion"
   vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port       = 80
     to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  ingress {
+    from_port       = 8000
+    to_port         = 8000
     protocol        = "tcp"
     security_groups = [aws_security_group.alb_sg.id]
   }
@@ -83,21 +98,30 @@ resource "aws_security_group" "app_sg" {
   }
 
   tags = {
-    Name = "smart-voting-app-sg"
+    Name        = "crawler-app-sg"
+    Project     = "crawler"
+    Environment = var.environment
   }
 }
 
 # Database Security Group
 resource "aws_security_group" "db_sg" {
-  name        = "smart-voting-db-sg"
-  description = "DB instances - allow MongoDB from App and SSH from Bastion"
+  name        = "crawler-db-sg"
+  description = "DB instances - allow MySQL from App and SSH from Bastion"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    from_port       = 27017
-    to_port         = 27017
+    from_port       = 3306
+    to_port         = 3306
     protocol        = "tcp"
     security_groups = [aws_security_group.app_sg.id]
+  }
+
+  ingress {
+    from_port = 3306
+    to_port   = 3306
+    protocol  = "tcp"
+    self      = true
   }
 
   ingress {
@@ -115,6 +139,8 @@ resource "aws_security_group" "db_sg" {
   }
 
   tags = {
-    Name = "smart-voting-db-sg"
+    Name        = "crawler-db-sg"
+    Project     = "crawler"
+    Environment = var.environment
   }
 }
