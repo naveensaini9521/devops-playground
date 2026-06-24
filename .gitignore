@@ -9,4 +9,6 @@ venv/
 .venv/
 __pycache__/
 *.pyc
+files/devops_ssh_key
+devops_ssh_key.pub
 EOF
