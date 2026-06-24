@@ -1,0 +1,152 @@
+---
+- name: Configure MySQL Database
+  hosts: role_master:role_slave
+  become: yes
+  gather_facts: yes
+
+  vars:
+    db_name: crawler
+    db_username: crawler_app
+    db_password: "Admin#123"
+    db_replication_password: "ReplicaPass!123"
+
+  tasks:
+    - name: Display database role
+      debug:
+        msg: "Configuring {{ inventory_hostname }}"
+
+    - name: Install MariaDB Server
+      dnf:
+        name:
+          - mariadb105-server
+          - mariadb105
+        state: present
+
+    - name: Start and enable MySQL
+      systemd:
+        name: mariadb
+        state: started
+        enabled: yes
+
+    - name: Get temporary root password
+      shell: grep 'temporary password' /var/log/mysqld.log | awk '{print $NF}'
+      register: temp_pass
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Configure Master Database
+      block:
+        - name: Set root password and create database
+          shell: |
+            sudo mysql --connect-expired-password <<EOF
+            ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ db_password }}';
+            CREATE DATABASE IF NOT EXISTS {{ db_name }};
+            CREATE USER IF NOT EXISTS '{{ db_username }}'@'%' IDENTIFIED BY '{{ db_password }}';
+            GRANT ALL PRIVILEGES ON {{ db_name }}.* TO '{{ db_username }}'@'%';
+
+            CREATE USER IF NOT EXISTS 'replication'@'%' IDENTIFIED BY '{{ db_replication_password }}';
+            GRANT REPLICATION SLAVE ON *.* TO 'replication'@'%';
+
+            FLUSH PRIVILEGES;
+            EOF
+          when: temp_pass.stdout != ""
+          ignore_errors: yes
+
+        - name: Create master configuration
+          copy:
+            dest: /etc/my.cnf.d/master.cnf
+            content: |
+              [mysqld]
+              server-id=1
+              log_bin=mysql-bin
+              bind-address=0.0.0.0
+              binlog_do_db={{ db_name }}
+          notify: restart mysql
+
+        - name: Flush handlers
+          meta: flush_handlers
+
+        - name: Get master status
+          shell: |
+            sudo mysql -e "SHOW MASTER STATUS\G"
+          register: master_status
+          ignore_errors: yes
+
+        - debug:
+            var: master_status.stdout_lines
+
+      when: "'role_master' in group_names"
+
+    - name: Configure Slave Database
+      block:
+        - name: Set root password on slave
+          shell: |
+            sudo mysql <<EOF
+            ALTER USER 'root'@'localhost' IDENTIFIED BY '{{ db_password }}';
+            FLUSH PRIVILEGES;
+            EOF
+          when: temp_pass.stdout != ""
+          ignore_errors: yes
+
+        - name: Create slave configuration
+          copy:
+            dest: /etc/my.cnf.d/slave.cnf
+            content: |
+              [mysqld]
+              server-id=2
+              relay-log=relay-bin
+              log_bin=mysql-bin
+              read_only=1
+              bind-address=0.0.0.0
+          notify: restart mysql
+
+        - name: Flush handlers
+          meta: flush_handlers
+
+        - name: Get master IP
+          set_fact:
+            master_ip: "{{ hostvars[groups['role_master'][0]].ansible_host | default(groups['role_master'][0]) }}"
+
+        - name: Display master IP
+          debug:
+            msg: "Master IP: {{ master_ip }}"
+
+        - name: Wait for master MySQL port
+          wait_for:
+            host: "{{ master_ip }}"
+            port: 3306
+            timeout: 120
+
+        - name: Configure replication
+          shell: |
+            sudo mysql <<EOF
+            STOP SLAVE;
+            RESET SLAVE ALL;
+
+            CHANGE MASTER TO
+              MASTER_HOST='{{ master_ip }}',
+              MASTER_USER='replication',
+              MASTER_PASSWORD='{{ db_replication_password }}',
+              MASTER_LOG_FILE='mysql-bin.000001',
+              MASTER_LOG_POS=154;
+
+            START SLAVE;
+            EOF
+          ignore_errors: yes
+
+        - name: Check slave status
+          shell: |
+            sudo mysql -e "SHOW SLAVE STATUS\G"
+          register: slave_status
+          ignore_errors: yes
+
+        - debug:
+            var: slave_status.stdout_lines
+
+      when: "'role_slave' in group_names"
+
+  handlers:
+    - name: restart mysql
+      systemd:
+        name: mariadb
+        state: restarted

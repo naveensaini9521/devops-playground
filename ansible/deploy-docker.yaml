@@ -1,0 +1,228 @@
+- name: Deploy Web Crawler with Docker
+  hosts: tier_app
+  become: yes
+  gather_facts: yes
+
+  vars:
+    app_name: web-crawler
+    repo_url: "https://github.com/naveensaini9521/web-crawler.git"
+    app_dir: "/var/www/{{ app_name }}"
+    app_user: ec2-user
+    app_port: 8000
+    external_port: 80
+
+  tasks:
+    - name: Display deployment info
+      debug:
+        msg: "Deploying {{ app_name }} on {{ inventory_hostname }}"
+
+    - name: Install required packages
+      dnf:
+        name:
+          - git
+          - docker
+          - python3
+          - python3-pip
+          - nginx
+        state: present
+
+    - name: Start Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user to docker group
+      user:
+        name: "{{ app_user }}"
+        groups: docker
+        append: yes
+
+    - name: Reset connection so docker group applies
+      meta: reset_connection
+
+    - name: Create application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Clone repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: main
+        update: yes
+        force: yes
+      become_user: "{{ app_user }}"
+
+    - name: Create Dockerfile
+      copy:
+        dest: "{{ app_dir }}/Dockerfile"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0644"
+        content: |
+          FROM python:3.10-slim
+
+          WORKDIR /app
+
+          RUN apt-get update && \
+              apt-get install -y gcc default-libmysqlclient-dev pkg-config curl && \
+              rm -rf /var/lib/apt/lists/*
+
+          COPY requirements.txt .
+
+          RUN pip install --no-cache-dir -r requirements.txt && \
+              pip install gunicorn
+
+          COPY . .
+
+          EXPOSE 8000
+
+          CMD ["gunicorn", "--workers", "4", "--threads", "2", "--worker-class", "gthread", "--bind", "0.0.0.0:8000", "app:app"]
+
+    - name: Create .env file
+      copy:
+        dest: "{{ app_dir }}/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0644"
+        content: |
+          FLASK_APP=app.py
+          FLASK_ENV=production
+          SECRET_KEY=dev-secret-key
+          DEBUG=False
+          DATABASE_URL=mysql://crawler_app:Admin#123@{{ hostvars[groups['role_master'][0]].private_ip_address }}/crawler
+
+    - name: Create application directories
+      file:
+        path: "{{ app_dir }}/{{ item }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+      loop:
+        - logs
+        - uploads
+        - static
+        - media
+
+    - name: Stop existing container (ignore errors)
+      command: docker rm -f {{ app_name }}-app
+      ignore_errors: yes
+      changed_when: false
+      become: yes
+
+    - name: Build Docker image
+      command: docker build -t {{ app_name }} .
+      args:
+        chdir: "{{ app_dir }}"
+      become: yes
+
+    - name: Run Docker container
+      command: >
+        docker run -d
+        --name {{ app_name }}-app
+        --restart unless-stopped
+        -p 127.0.0.1:{{ app_port }}:{{ app_port }}
+        --env-file {{ app_dir }}/.env
+        -v {{ app_dir }}/logs:/app/logs
+        -v {{ app_dir }}/uploads:/app/uploads
+        {{ app_name }}
+      become: yes
+      register: run_result
+
+    - name: Show container ID
+      debug:
+        var: run_result.stdout
+
+    - name: Wait for application port
+      wait_for:
+        host: 127.0.0.1
+        port: "{{ app_port }}"
+        timeout: 180
+
+    - name: Configure Nginx reverse proxy
+      copy:
+        dest: /etc/nginx/conf.d/{{ app_name }}.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          upstream app_backend {
+              server 127.0.0.1:{{ app_port }};
+              keepalive 32;
+          }
+
+          server {
+              listen 80;
+              server_name _;
+
+              client_max_body_size 100M;
+
+              location /health {
+                  access_log off;
+                  return 200 "healthy\n";
+                  add_header Content-Type text/plain;
+              }
+
+              location / {
+                  proxy_pass http://app_backend;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+
+              access_log /var/log/nginx/{{ app_name }}_access.log;
+              error_log /var/log/nginx/{{ app_name }}_error.log;
+          }
+
+    - name: Test Nginx config
+      command: nginx -t
+      register: nginx_test
+      failed_when: nginx_test.rc != 0
+      changed_when: false
+
+    - name: Reload Nginx
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Check application health
+      uri:
+        url: "http://127.0.0.1/health"
+        status_code: 200
+        return_content: yes
+      register: health_check
+      retries: 10
+      delay: 5
+      until: health_check.status == 200
+
+    - name: Show running containers
+      command: docker ps -a
+      register: docker_ps
+      changed_when: false
+      become: yes
+
+    - name: Display running containers
+      debug:
+        var: docker_ps.stdout_lines
+
+    - name: Show application logs
+      command: docker logs {{ app_name }}-app --tail 50
+      register: app_logs
+      changed_when: false
+      ignore_errors: yes
+      become: yes
+
+    - name: Display application logs
+      debug:
+        var: app_logs.stdout_lines
+
+    - name: Deployment complete
+      debug:
+        msg: "Application deployed successfully on {{ inventory_hostname }} on port 80"
