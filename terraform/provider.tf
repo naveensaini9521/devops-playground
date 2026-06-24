@@ -10,5 +10,9 @@ terraform {
 }
 
 provider "aws" {
-  region = "ap-south-1"
+  region = var.aws_region
+
+  max_retries             = 3
+  skip_metadata_api_check = true
+  skip_region_validation  = true
 }
