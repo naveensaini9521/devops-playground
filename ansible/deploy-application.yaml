@@ -1,0 +1,199 @@
+---
+- name: Deploy Web Crawler Application (Production ALB + Docker)
+  hosts: tier_app
+  become: yes
+  gather_facts: yes
+
+  vars:
+    app_name: "web-crawler"
+    app_dir: "/var/www/web-crawler"
+    app_user: "ec2-user"
+    app_port: 8000
+    external_port: 80
+    repo_url: "https://github.com/naveensaini9521/web-crawler.git"
+    docker_network: "web-network"
+    app_workers: 4
+    app_entry_point: "app:app"
+    elb_dns: "crawler-alb-451910707.ap-south-1.elb.amazonaws.com"
+
+  tasks:
+    - name: Display deployment info
+      debug:
+        msg: |
+          ============================================
+          Deploying: {{ app_name }}
+          Host: {{ inventory_hostname }}
+          ELB: {{ elb_dns }}
+          ============================================
+
+    - name: Install required packages
+      dnf:
+        name:
+          - git
+          - docker
+          - wget
+          - jq
+          - net-tools
+        state: present
+        update_cache: yes
+
+    - name: Start Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ec2-user to docker group
+      user:
+        name: ec2-user
+        groups: docker
+        append: yes
+
+    # FIX: Force install Docker Buildx
+    - name: Create Docker CLI plugin directory
+      file:
+        path: /usr/local/lib/docker/cli-plugins
+        state: directory
+        mode: "0755"
+
+    - name: Install Docker Buildx
+      get_url:
+        url: https://github.com/docker/buildx/releases/download/v0.19.1/buildx-v0.19.1.linux-amd64
+        dest: /usr/local/lib/docker/cli-plugins/docker-buildx
+        mode: "0755"
+      register: buildx_install
+
+    - name: Check if buildx builder already exists
+      shell: docker buildx inspect mybuilder
+      register: buildx_check
+      failed_when: false
+      changed_when: false
+
+    - name: Create buildx builder instance (only if not exists)
+      command: docker buildx create --name mybuilder --use
+      when: buildx_check.rc != 0
+      ignore_errors: yes
+
+    - name: Bootstrap buildx builder
+      command: docker buildx inspect --bootstrap
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Install Docker Compose V2 plugin
+      get_url:
+        url: https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64
+        dest: /usr/local/lib/docker/cli-plugins/docker-compose
+        mode: "0755"
+
+    - name: Verify Docker Compose installation
+      command: docker compose version
+      register: compose_verify
+      changed_when: false
+
+    - name: Display Docker Compose version
+      debug:
+        msg: "Docker Compose installed: {{ compose_verify.stdout }}"
+
+    - name: Create application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+
+    - name: Clone latest repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: main
+        force: yes
+      become_user: ec2-user
+
+    - name: Create .env file
+      template:
+        src: .env.j2
+        dest: "{{ app_dir }}/.env"
+        owner: ec2-user
+        group: ec2-user
+        mode: "0644"
+
+    - name: Create docker-compose.yaml
+      template:
+        src: docker-compose.yaml.j2
+        dest: "{{ app_dir }}/docker-compose.yaml"
+        owner: ec2-user
+        group: ec2-user
+        mode: "0644"
+
+    - name: Create Dockerfile
+      template:
+        src: Dockerfile.j2
+        dest: "{{ app_dir }}/Dockerfile"
+        owner: ec2-user
+        group: ec2-user
+        mode: "0644"
+
+    - name: Stop existing containers
+      shell: docker compose down || true
+      args:
+        chdir: "{{ app_dir }}"
+
+    - name: Build and start containers
+      shell: docker compose up -d --build
+      args:
+        chdir: "{{ app_dir }}"
+      register: compose_result
+      retries: 3
+      delay: 10
+      until: compose_result.rc == 0
+
+    - name: Wait for application port
+      wait_for:
+        port: "{{ app_port }}"
+        timeout: 120
+
+    - name: Check local health endpoint
+      uri:
+        url: "http://127.0.0.1:{{ app_port }}/"
+        status_code: 200
+      register: local_health
+      retries: 5
+      delay: 5
+      until: local_health.status == 200
+
+    - name: Check application via ELB
+      uri:
+        url: "http://{{ elb_dns }}/health"
+        status_code: 200
+      register: elb_health
+      retries: 5
+      delay: 10
+      until: elb_health.status == 200
+      ignore_errors: yes
+
+    - name: Show running containers
+      command: docker ps
+      register: docker_ps
+      changed_when: false
+
+    - debug:
+        var: docker_ps.stdout_lines
+
+    - name: Show container logs if deployment failed
+      shell: docker compose logs --tail=50
+      args:
+        chdir: "{{ app_dir }}"
+      when: compose_result.rc != 0
+      ignore_errors: yes
+
+    - name: Deployment complete
+      debug:
+        msg: |
+          DEPLOYMENT SUCCESSFUL
+          App: {{ app_name }}
+          Instance: {{ inventory_hostname }}
+          ELB: http://{{ elb_dns }}
+          Port: {{ app_port }}
+
+  handlers: []
