@@ -9,7 +9,7 @@ filters:
   tag:Project: crawler
 
 hostnames:
-  - private-ip-address
+  - name: private-ip-address
     options:
       - tag:Name
 
