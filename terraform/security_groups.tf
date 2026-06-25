@@ -14,6 +14,13 @@ resource "aws_security_group" "alb_sg" {
   }
 
   ingress {
+  from_port       = -1
+  to_port         = -1
+  protocol        = "icmp"
+  security_groups = [aws_security_group.bastion_sg.id]
+}
+
+  ingress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
