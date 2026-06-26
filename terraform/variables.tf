@@ -9,13 +9,13 @@ variable "aws_region" {
 variable "instance_type" {
   description = "EC2 instance type for app servers"
   type        = string
-  default     = "t3.medium"
+  default     = "t3.small"
 }
 
 variable "db_instance_type" {
   description = "EC2 instance type for database servers"
   type        = string
-  default     = "t3.medium"
+  default     = "t3.small"
 }
 
 variable "instance_name" {

@@ -22,9 +22,9 @@ data "aws_ami" "amazon_linux" {
 # Bastion Server
 resource "aws_instance" "bastion" {
   ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.medium"
+  instance_type          = "t3.small"
   key_name               = "devops_ssh"
-  subnet_id              = aws_subnet.public[0].id # First public subnet
+  subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.bastion_sg.id]
 
   associate_public_ip_address = true
