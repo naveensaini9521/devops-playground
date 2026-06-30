@@ -1,17 +1,20 @@
-// services/orderService.ts
+// src/services/orderService.ts
 import axios from 'axios';
-
+import type {
+  Order,
+  OrderItem,
+  CreateOrderResponse,
+} from "../index";
 const API = import.meta.env.VITE_ORDER_API_URL || 'http://localhost:8002';
 
 const api = axios.create({
   baseURL: API,
-  headers: { 
+  headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
   },
 });
 
-// Add token to every request
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -20,39 +23,21 @@ api.interceptors.request.use(
     }
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Response interceptor
 api.interceptors.response.use(
-  (response) => {
-    return response;
-  },
+  (response) => response,
   (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      window.location.href = '/';
+    }
     return Promise.reject(error);
   }
 );
 
-export interface OrderItem {
-  name: string;
-  quantity: number;
-}
-
-export interface Order {
-  id: number;
-  order_number: string;
-  customer_name: string;
-  customer_id: number;
-  total_amount: number;
-  status: string;
-  transaction_id: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export const createOrder = async (items: OrderItem[]) => {
+export const createOrder = async (items: OrderItem[]): Promise<CreateOrderResponse> => {
   const response = await api.post('/orders', { items });
   return response.data;
 };
@@ -64,5 +49,16 @@ export const getOrders = async (): Promise<Order[]> => {
 
 export const getOrder = async (id: number): Promise<Order> => {
   const response = await api.get(`/orders/${id}`);
+  return response.data;
+};
+
+export const updateOrderStatus = async (
+  orderNumber: string,
+  status: string,
+  transactionId?: string
+): Promise<Order> => {
+  const response = await api.put(`/orders/${orderNumber}/status`, null, {
+    params: { status, transaction_id: transactionId }
+  });
   return response.data;
 };
